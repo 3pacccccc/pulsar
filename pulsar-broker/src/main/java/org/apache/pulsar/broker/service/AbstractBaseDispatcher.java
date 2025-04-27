@@ -27,7 +27,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.mledger.Entry;
@@ -127,173 +130,27 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
                                         SendMessageInfo sendMessageInfo,
                                         EntryBatchIndexesAcks indexesAcks, ManagedCursor cursor,
                                         boolean isReplayRead, Consumer consumer) {
-        int totalMessages = 0;
-        long totalBytes = 0;
-        int totalChunkedMessages = 0;
-        int totalEntries = 0;
-        int filteredMessageCount = 0;
-        int filteredEntryCount = 0;
-        long filteredBytesCount = 0;
+        AtomicInteger totalMessages = new AtomicInteger(0);
+        AtomicLong totalBytes = new AtomicLong(0);
+        AtomicInteger totalChunkedMessages = new AtomicInteger(0);
+        AtomicInteger totalEntries = new AtomicInteger(0);
+        AtomicInteger filteredMessageCount = new AtomicInteger(0);
+        AtomicInteger filteredEntryCount = new AtomicInteger(0);
+        AtomicLong filteredBytesCount = new AtomicLong(0);
         List<Position> entriesToFiltered = hasFilter ? new ArrayList<>() : null;
         List<Position> entriesToRedeliver = hasFilter ? new ArrayList<>() : null;
+        List<CompletableFuture<Void>> filterFutures = new ArrayList<>();
         for (int i = 0, entriesSize = entries.size(); i < entriesSize; i++) {
-            final Entry entry = entries.get(i);
-            if (entry == null) {
-                continue;
-            }
-            ByteBuf metadataAndPayload = entry.getDataBuffer();
-            final int metadataIndex = i + startOffset;
-
-            MessageMetadata msgMetadata;
-            if (metadataArray != null) {
-                msgMetadata = metadataArray[metadataIndex];
-            } else if (entry instanceof EntryAndMetadata) {
-                msgMetadata = ((EntryAndMetadata) entry).getMetadata();
-            } else {
-                msgMetadata = Commands.peekAndCopyMessageMetadata(metadataAndPayload, subscription.toString(), -1);
-            }
-
-            int entryMsgCnt = msgMetadata == null ? 1 : msgMetadata.getNumMessagesInBatch();
-            if (hasFilter) {
-                this.filterProcessedMsgs.add(entryMsgCnt);
-            }
-
-            EntryFilter.FilterResult filterResult = runFiltersForEntry(entry, msgMetadata, consumer);
-            if (filterResult == EntryFilter.FilterResult.REJECT) {
-                entriesToFiltered.add(entry.getPosition());
-                entries.set(i, null);
-                // FilterResult will be always `ACCEPTED` when there is No Filter
-                // dont need to judge whether `hasFilter` is true or not.
-                this.filterRejectedMsgs.add(entryMsgCnt);
-                filteredEntryCount++;
-                filteredMessageCount += entryMsgCnt;
-                filteredBytesCount += metadataAndPayload.readableBytes();
-                entry.release();
-                continue;
-            } else if (filterResult == EntryFilter.FilterResult.RESCHEDULE) {
-                entriesToRedeliver.add(entry.getPosition());
-                entries.set(i, null);
-                // FilterResult will be always `ACCEPTED` when there is No Filter
-                // dont need to judge whether `hasFilter` is true or not.
-                this.filterRescheduledMsgs.add(entryMsgCnt);
-                filteredEntryCount++;
-                filteredMessageCount += entryMsgCnt;
-                filteredBytesCount += metadataAndPayload.readableBytes();
-                entry.release();
-                continue;
-            }
-            if (msgMetadata != null && msgMetadata.hasTxnidMostBits()
-                    && msgMetadata.hasTxnidLeastBits()) {
-                if (Markers.isTxnMarker(msgMetadata)) {
-                    if (cursor == null || !cursor.getName().equals(Compactor.COMPACTION_SUBSCRIPTION)) {
-                        // because consumer can receive message is smaller than maxReadPosition,
-                        // so this marker is useless for this subscription
-                        individualAcknowledgeMessageIfNeeded(Collections.singletonList(entry.getPosition()),
-                                Collections.emptyMap());
-                        entries.set(i, null);
-                        entry.release();
-                        continue;
-                    }
-                } else if (((PersistentTopic) subscription.getTopic())
-                        .isTxnAborted(new TxnID(msgMetadata.getTxnidMostBits(), msgMetadata.getTxnidLeastBits()),
-                                entry.getPosition())) {
-                    individualAcknowledgeMessageIfNeeded(Collections.singletonList(entry.getPosition()),
-                            Collections.emptyMap());
-                    entries.set(i, null);
-                    entry.release();
-                    continue;
-                }
-            }
-
-            if (msgMetadata == null || (Markers.isServerOnlyMarker(msgMetadata))) {
-                Position pos = entry.getPosition();
-                // Message metadata was corrupted or the messages was a server-only marker
-
-                if (Markers.isReplicatedSubscriptionSnapshotMarker(msgMetadata)) {
-                    final int readerIndex = metadataAndPayload.readerIndex();
-                    processReplicatedSubscriptionSnapshot(pos, metadataAndPayload);
-                    metadataAndPayload.readerIndex(readerIndex);
-                }
-
-                // Deliver marker to __compaction cursor to avoid compaction task stuck,
-                // and filter out them when doing topic compaction.
-                if (msgMetadata == null || cursor == null
-                        || !cursor.getName().equals(Compactor.COMPACTION_SUBSCRIPTION)) {
-                    entries.set(i, null);
-                    entry.release();
-                    individualAcknowledgeMessageIfNeeded(Collections.singletonList(pos),
-                            Collections.emptyMap());
-                    continue;
-                }
-            } else if (trackDelayedDelivery(entry.getLedgerId(), entry.getEntryId(), msgMetadata)) {
-                // The message is marked for delayed delivery. Ignore for now.
-                entries.set(i, null);
-                entry.release();
-                continue;
-            }
-
-            if (hasFilter) {
-                this.filterAcceptedMsgs.add(entryMsgCnt);
-            }
-
-            int batchSize = msgMetadata.getNumMessagesInBatch();
-            long[] ackSet = null;
-            if (indexesAcks != null && cursor != null) {
-                Position position = PositionFactory.create(entry.getLedgerId(), entry.getEntryId());
-                ackSet = cursor
-                        .getDeletedBatchIndexesAsLongArray(position);
-                // some batch messages ack bit sit will be in pendingAck state, so don't send all bit sit to consumer
-                if (subscription instanceof PersistentSubscription
-                        && ((PersistentSubscription) subscription)
-                        .getPendingAckHandle() instanceof PendingAckHandleImpl) {
-                    Position positionInPendingAck =
-                            ((PersistentSubscription) subscription).getPositionInPendingAck(position);
-                    // if this position not in pendingAck state, don't need to do any op
-                    if (positionInPendingAck != null) {
-                        long[] pendingAckSet = AckSetStateUtil.getAckSetArrayOrNull(positionInPendingAck);
-                        if (pendingAckSet != null) {
-                            // need to or ackSet in pendingAck state and cursor ackSet which bit sit has been acked
-                            if (ackSet != null) {
-                                ackSet = andAckSet(ackSet, pendingAckSet);
-                            } else {
-                                // if actSet is null, use pendingAck ackSet
-                                ackSet = pendingAckSet;
-                            }
-                            // if the result of pendingAckSet(in pendingAckHandle) AND the ackSet(in cursor) is empty
-                            // filter this entry
-                            if (isAckSetEmpty(ackSet)) {
-                                entries.set(i, null);
-                                entry.release();
-                                continue;
-                            }
-                        } else {
-                            // filter non-batch message in pendingAck state
-                            entries.set(i, null);
-                            entry.release();
-                            continue;
-                        }
-                    }
-                }
-                if (ackSet != null) {
-                    indexesAcks.setIndexesAcks(i, Pair.of(batchSize, ackSet));
-                } else {
-                    indexesAcks.setIndexesAcks(i, null);
-                }
-            }
-
-            totalEntries++;
-            totalMessages += batchSize;
-            totalBytes += metadataAndPayload.readableBytes();
-            totalChunkedMessages += msgMetadata.hasChunkId() ? 1 : 0;
-            batchSizes.setBatchSize(i, batchSize);
-
-            BrokerInterceptor interceptor = subscription.interceptor();
-            if (null != interceptor) {
-                // keep for compatibility if users has implemented the old interface
-                interceptor.beforeSendMessage(subscription, entry, ackSet, msgMetadata);
-                interceptor.beforeSendMessage(subscription, entry, ackSet, msgMetadata, consumer);
-            }
+            int finalI = i;
+            CompletableFuture<Void> filterFuture =
+                    CompletableFuture.runAsync(() -> this.doFilterEntries(metadataArray, entries, finalI, startOffset,
+                            consumer, entriesToFiltered, entriesToRedeliver, filteredEntryCount, filteredMessageCount,
+                            filteredBytesCount, cursor, indexesAcks, totalEntries, totalMessages, totalBytes,
+                            totalChunkedMessages, batchSizes
+                    ));
+            filterFutures.add(filterFuture);
         }
+        CompletableFuture.allOf(filterFutures.toArray(new CompletableFuture[0])).join();
         if (CollectionUtils.isNotEmpty(entriesToFiltered)) {
             individualAcknowledgeMessageIfNeeded(entriesToFiltered, Collections.emptyMap());
 
@@ -314,14 +171,181 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
         }
 
         if (serviceConfig.isDispatchThrottlingForFilteredEntriesEnabled()) {
-            acquirePermitsForDeliveredMessages(subscription.getTopic(), cursor, filteredEntryCount,
-                    filteredMessageCount, filteredBytesCount);
+            acquirePermitsForDeliveredMessages(subscription.getTopic(), cursor, filteredEntryCount.get(),
+                    filteredMessageCount.get(), filteredBytesCount.get());
         }
 
-        sendMessageInfo.setTotalMessages(totalMessages);
-        sendMessageInfo.setTotalBytes(totalBytes);
-        sendMessageInfo.setTotalChunkedMessages(totalChunkedMessages);
-        return totalEntries;
+        sendMessageInfo.setTotalMessages(totalMessages.get());
+        sendMessageInfo.setTotalBytes(totalBytes.get());
+        sendMessageInfo.setTotalChunkedMessages(totalChunkedMessages.get());
+        return totalEntries.get();
+    }
+
+    private void doFilterEntries(@Nullable MessageMetadata[] metadataArray, List<? extends Entry> entries,
+                        int i, int startOffset, Consumer consumer, List<Position> entriesToFiltered,
+                        List<Position> entriesToRedeliver, AtomicInteger filteredEntryCount,
+                        AtomicInteger filteredMessageCount, AtomicLong filteredBytesCount,
+                        ManagedCursor cursor, EntryBatchIndexesAcks indexesAcks,
+                        AtomicInteger totalEntries, AtomicInteger totalMessages,
+                        AtomicLong totalBytes, AtomicInteger totalChunkedMessages,
+                        EntryBatchSizes batchSizes) {
+        final Entry entry = entries.get(i);
+        if (entry == null) {
+            return;
+        }
+        ByteBuf metadataAndPayload = entry.getDataBuffer();
+        final int metadataIndex = i + startOffset;
+
+        MessageMetadata msgMetadata;
+        if (metadataArray != null) {
+            msgMetadata = metadataArray[metadataIndex];
+        } else if (entry instanceof EntryAndMetadata) {
+            msgMetadata = ((EntryAndMetadata) entry).getMetadata();
+        } else {
+            msgMetadata = Commands.peekAndCopyMessageMetadata(metadataAndPayload, subscription.toString(), -1);
+        }
+
+        int entryMsgCnt = msgMetadata == null ? 1 : msgMetadata.getNumMessagesInBatch();
+        if (hasFilter) {
+            this.filterProcessedMsgs.add(entryMsgCnt);
+        }
+
+        EntryFilter.FilterResult filterResult = runFiltersForEntry(entry, msgMetadata, consumer);
+        if (filterResult == EntryFilter.FilterResult.REJECT) {
+            entriesToFiltered.add(entry.getPosition());
+            entries.set(i, null);
+            // FilterResult will be always `ACCEPTED` when there is No Filter
+            // don't need to judge whether `hasFilter` is true or not.
+            this.filterRejectedMsgs.add(entryMsgCnt);
+            filteredEntryCount.incrementAndGet();
+            filteredMessageCount.addAndGet(entryMsgCnt);
+            filteredBytesCount.addAndGet(metadataAndPayload.readableBytes());
+            entry.release();
+            return;
+        } else if (filterResult == EntryFilter.FilterResult.RESCHEDULE) {
+            entriesToRedeliver.add(entry.getPosition());
+            entries.set(i, null);
+            // FilterResult will be always `ACCEPTED` when there is No Filter
+            // don't need to judge whether `hasFilter` is true or not.
+            this.filterRescheduledMsgs.add(entryMsgCnt);
+            filteredEntryCount.incrementAndGet();
+            filteredMessageCount.addAndGet(entryMsgCnt);
+            filteredBytesCount.addAndGet(metadataAndPayload.readableBytes());
+            entry.release();
+            return;
+        }
+        if (msgMetadata != null && msgMetadata.hasTxnidMostBits()
+                && msgMetadata.hasTxnidLeastBits()) {
+            if (Markers.isTxnMarker(msgMetadata)) {
+                if (cursor == null || !cursor.getName().equals(Compactor.COMPACTION_SUBSCRIPTION)) {
+                    // because consumer can receive message is smaller than maxReadPosition,
+                    // so this marker is useless for this subscription
+                    individualAcknowledgeMessageIfNeeded(Collections.singletonList(entry.getPosition()),
+                            Collections.emptyMap());
+                    entries.set(i, null);
+                    entry.release();
+                    return;
+                }
+            } else if (((PersistentTopic) subscription.getTopic())
+                    .isTxnAborted(new TxnID(msgMetadata.getTxnidMostBits(), msgMetadata.getTxnidLeastBits()),
+                            entry.getPosition())) {
+                individualAcknowledgeMessageIfNeeded(Collections.singletonList(entry.getPosition()),
+                        Collections.emptyMap());
+                entries.set(i, null);
+                entry.release();
+                return;
+            }
+        }
+
+        if (msgMetadata == null || (Markers.isServerOnlyMarker(msgMetadata))) {
+            Position pos = entry.getPosition();
+            // Message metadata was corrupted or the messages was a server-only marker
+
+            if (Markers.isReplicatedSubscriptionSnapshotMarker(msgMetadata)) {
+                final int readerIndex = metadataAndPayload.readerIndex();
+                processReplicatedSubscriptionSnapshot(pos, metadataAndPayload);
+                metadataAndPayload.readerIndex(readerIndex);
+            }
+
+            // Deliver marker to __compaction cursor to avoid compaction task stuck,
+            // and filter out them when doing topic compaction.
+            if (msgMetadata == null || cursor == null
+                    || !cursor.getName().equals(Compactor.COMPACTION_SUBSCRIPTION)) {
+                entries.set(i, null);
+                entry.release();
+                individualAcknowledgeMessageIfNeeded(Collections.singletonList(pos),
+                        Collections.emptyMap());
+                return;
+            }
+        } else if (trackDelayedDelivery(entry.getLedgerId(), entry.getEntryId(), msgMetadata)) {
+            // The message is marked for delayed delivery. Ignore for now.
+            entries.set(i, null);
+            entry.release();
+            return;
+        }
+
+        if (hasFilter) {
+            this.filterAcceptedMsgs.add(entryMsgCnt);
+        }
+
+        int batchSize = msgMetadata.getNumMessagesInBatch();
+        long[] ackSet = null;
+        if (indexesAcks != null && cursor != null) {
+            Position position = PositionFactory.create(entry.getLedgerId(), entry.getEntryId());
+            ackSet = cursor
+                    .getDeletedBatchIndexesAsLongArray(position);
+            // some batch messages ack bit sit will be in pendingAck state, so don't send all bit sit to consumer
+            if (subscription instanceof PersistentSubscription
+                    && ((PersistentSubscription) subscription)
+                    .getPendingAckHandle() instanceof PendingAckHandleImpl) {
+                Position positionInPendingAck =
+                        ((PersistentSubscription) subscription).getPositionInPendingAck(position);
+                // if this position not in pendingAck state, don't need to do any op
+                if (positionInPendingAck != null) {
+                    long[] pendingAckSet = AckSetStateUtil.getAckSetArrayOrNull(positionInPendingAck);
+                    if (pendingAckSet != null) {
+                        // need to or ackSet in pendingAck state and cursor ackSet which bit sit has been acked
+                        if (ackSet != null) {
+                            ackSet = andAckSet(ackSet, pendingAckSet);
+                        } else {
+                            // if actSet is null, use pendingAck ackSet
+                            ackSet = pendingAckSet;
+                        }
+                        // if the result of pendingAckSet(in pendingAckHandle) AND the ackSet(in cursor) is empty
+                        // filter this entry
+                        if (isAckSetEmpty(ackSet)) {
+                            entries.set(i, null);
+                            entry.release();
+                            return;
+                        }
+                    } else {
+                        // filter non-batch message in pendingAck state
+                        entries.set(i, null);
+                        entry.release();
+                        return;
+                    }
+                }
+            }
+            if (ackSet != null) {
+                indexesAcks.setIndexesAcks(i, Pair.of(batchSize, ackSet));
+            } else {
+                indexesAcks.setIndexesAcks(i, null);
+            }
+        }
+
+        totalEntries.incrementAndGet();
+        totalMessages.addAndGet(batchSize);
+        totalBytes.addAndGet(metadataAndPayload.readableBytes());
+        totalChunkedMessages.addAndGet(msgMetadata.hasChunkId() ? 1 : 0);
+        batchSizes.setBatchSize(i, batchSize);
+
+        BrokerInterceptor interceptor = subscription.interceptor();
+        if (null != interceptor) {
+            // keep for compatibility if users has implemented the old interface
+            interceptor.beforeSendMessage(subscription, entry, ackSet, msgMetadata);
+            interceptor.beforeSendMessage(subscription, entry, ackSet, msgMetadata, consumer);
+        }
+
     }
 
     private void individualAcknowledgeMessageIfNeeded(List<Position> positions, Map<String, Long> properties) {
