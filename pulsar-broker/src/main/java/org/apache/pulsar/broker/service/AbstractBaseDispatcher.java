@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -137,8 +138,8 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
         AtomicInteger filteredMessageCount = new AtomicInteger(0);
         AtomicInteger filteredEntryCount = new AtomicInteger(0);
         AtomicLong filteredBytesCount = new AtomicLong(0);
-        List<Position> entriesToFiltered = hasFilter ? new ArrayList<>() : null;
-        List<Position> entriesToRedeliver = hasFilter ? new ArrayList<>() : null;
+        List<Position> entriesToFiltered = hasFilter ? new CopyOnWriteArrayList<>() : null;
+        List<Position> entriesToRedeliver = hasFilter ? new CopyOnWriteArrayList<>() : null;
         List<CompletableFuture<Void>> filterFutures = new ArrayList<>();
         for (int i = 0, entriesSize = entries.size(); i < entriesSize; i++) {
             int finalI = i;
