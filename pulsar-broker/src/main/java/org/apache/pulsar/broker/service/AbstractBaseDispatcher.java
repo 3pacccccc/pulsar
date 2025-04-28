@@ -27,8 +27,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -138,8 +139,9 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
         AtomicInteger filteredMessageCount = new AtomicInteger(0);
         AtomicInteger filteredEntryCount = new AtomicInteger(0);
         AtomicLong filteredBytesCount = new AtomicLong(0);
-        List<Position> entriesToFiltered = hasFilter ? new CopyOnWriteArrayList<>() : null;
-        List<Position> entriesToRedeliver = hasFilter ? new CopyOnWriteArrayList<>() : null;
+        Queue<Position> entriesToFiltered = hasFilter ? new ConcurrentLinkedQueue<>() : null;
+        Queue<Position> entriesToRedeliver = hasFilter ? new ConcurrentLinkedQueue<>() : null;
+        Queue<Integer> invalidIndexQueue = new ConcurrentLinkedQueue<>();
         List<CompletableFuture<Void>> filterFutures = new ArrayList<>();
         for (int i = 0, entriesSize = entries.size(); i < entriesSize; i++) {
             int finalI = i;
@@ -147,13 +149,18 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
                     CompletableFuture.runAsync(() -> this.doFilterEntries(metadataArray, entries, finalI, startOffset,
                             consumer, entriesToFiltered, entriesToRedeliver, filteredEntryCount, filteredMessageCount,
                             filteredBytesCount, cursor, indexesAcks, totalEntries, totalMessages, totalBytes,
-                            totalChunkedMessages, batchSizes
+                            totalChunkedMessages, batchSizes, invalidIndexQueue
                     ));
             filterFutures.add(filterFuture);
         }
+        while (invalidIndexQueue.peek() != null) {
+            Integer invalidIndex = invalidIndexQueue.poll();
+            entries.set(invalidIndex, null);
+        }
+
         CompletableFuture.allOf(filterFutures.toArray(new CompletableFuture[0])).join();
         if (CollectionUtils.isNotEmpty(entriesToFiltered)) {
-            individualAcknowledgeMessageIfNeeded(entriesToFiltered, Collections.emptyMap());
+            individualAcknowledgeMessageIfNeeded(new ArrayList<>(entriesToFiltered), Collections.emptyMap());
 
             int filtered = entriesToFiltered.size();
             Topic topic = subscription.getTopic();
@@ -166,7 +173,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
                     .schedule(() -> {
                         // simulate the Consumer rejected the message
                         subscription
-                                .redeliverUnacknowledgedMessages(consumer, entriesToRedeliver);
+                                .redeliverUnacknowledgedMessages(consumer, new ArrayList<>(entriesToRedeliver));
                     }, serviceConfig.getDispatcherEntryFilterRescheduledMessageDelay(), TimeUnit.MILLISECONDS);
 
         }
@@ -183,13 +190,13 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
     }
 
     private void doFilterEntries(@Nullable MessageMetadata[] metadataArray, List<? extends Entry> entries,
-                        int i, int startOffset, Consumer consumer, List<Position> entriesToFiltered,
-                        List<Position> entriesToRedeliver, AtomicInteger filteredEntryCount,
+                        int i, int startOffset, Consumer consumer, Queue<Position> entriesToFiltered,
+                        Queue<Position> entriesToRedeliver, AtomicInteger filteredEntryCount,
                         AtomicInteger filteredMessageCount, AtomicLong filteredBytesCount,
                         ManagedCursor cursor, EntryBatchIndexesAcks indexesAcks,
                         AtomicInteger totalEntries, AtomicInteger totalMessages,
                         AtomicLong totalBytes, AtomicInteger totalChunkedMessages,
-                        EntryBatchSizes batchSizes) {
+                        EntryBatchSizes batchSizes, Queue<Integer> invalidIndexQueue) {
         final Entry entry = entries.get(i);
         if (entry == null) {
             return;
@@ -214,7 +221,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
         EntryFilter.FilterResult filterResult = runFiltersForEntry(entry, msgMetadata, consumer);
         if (filterResult == EntryFilter.FilterResult.REJECT) {
             entriesToFiltered.add(entry.getPosition());
-            entries.set(i, null);
+            invalidIndexQueue.add(i);
             // FilterResult will be always `ACCEPTED` when there is No Filter
             // don't need to judge whether `hasFilter` is true or not.
             this.filterRejectedMsgs.add(entryMsgCnt);
@@ -225,7 +232,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
             return;
         } else if (filterResult == EntryFilter.FilterResult.RESCHEDULE) {
             entriesToRedeliver.add(entry.getPosition());
-            entries.set(i, null);
+            invalidIndexQueue.add(i);
             // FilterResult will be always `ACCEPTED` when there is No Filter
             // don't need to judge whether `hasFilter` is true or not.
             this.filterRescheduledMsgs.add(entryMsgCnt);
@@ -243,7 +250,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
                     // so this marker is useless for this subscription
                     individualAcknowledgeMessageIfNeeded(Collections.singletonList(entry.getPosition()),
                             Collections.emptyMap());
-                    entries.set(i, null);
+                    invalidIndexQueue.add(i);
                     entry.release();
                     return;
                 }
@@ -252,7 +259,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
                             entry.getPosition())) {
                 individualAcknowledgeMessageIfNeeded(Collections.singletonList(entry.getPosition()),
                         Collections.emptyMap());
-                entries.set(i, null);
+                invalidIndexQueue.add(i);
                 entry.release();
                 return;
             }
@@ -272,7 +279,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
             // and filter out them when doing topic compaction.
             if (msgMetadata == null || cursor == null
                     || !cursor.getName().equals(Compactor.COMPACTION_SUBSCRIPTION)) {
-                entries.set(i, null);
+                invalidIndexQueue.add(i);
                 entry.release();
                 individualAcknowledgeMessageIfNeeded(Collections.singletonList(pos),
                         Collections.emptyMap());
@@ -280,7 +287,7 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
             }
         } else if (trackDelayedDelivery(entry.getLedgerId(), entry.getEntryId(), msgMetadata)) {
             // The message is marked for delayed delivery. Ignore for now.
-            entries.set(i, null);
+            invalidIndexQueue.add(i);
             entry.release();
             return;
         }
@@ -315,13 +322,13 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
                         // if the result of pendingAckSet(in pendingAckHandle) AND the ackSet(in cursor) is empty
                         // filter this entry
                         if (isAckSetEmpty(ackSet)) {
-                            entries.set(i, null);
+                            invalidIndexQueue.add(i);
                             entry.release();
                             return;
                         }
                     } else {
                         // filter non-batch message in pendingAck state
-                        entries.set(i, null);
+                        invalidIndexQueue.add(i);
                         entry.release();
                         return;
                     }
