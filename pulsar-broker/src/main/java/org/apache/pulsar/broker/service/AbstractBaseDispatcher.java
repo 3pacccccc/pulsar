@@ -145,13 +145,18 @@ public abstract class AbstractBaseDispatcher extends EntryFilterSupport implemen
         List<CompletableFuture<Void>> filterFutures = new ArrayList<>();
         for (int i = 0, entriesSize = entries.size(); i < entriesSize; i++) {
             int finalI = i;
-            CompletableFuture<Void> filterFuture =
-                    CompletableFuture.runAsync(() -> this.doFilterEntries(metadataArray, entries, finalI, startOffset,
+            this.doFilterEntries(metadataArray, entries, finalI, startOffset,
                             consumer, entriesToFiltered, entriesToRedeliver, filteredEntryCount, filteredMessageCount,
                             filteredBytesCount, cursor, indexesAcks, totalEntries, totalMessages, totalBytes,
                             totalChunkedMessages, batchSizes, invalidIndexQueue
-                    ));
-            filterFutures.add(filterFuture);
+                    );
+//            CompletableFuture<Void> filterFuture =
+//                    CompletableFuture.runAsync(() -> this.doFilterEntries(metadataArray, entries, finalI, startOffset,
+//                            consumer, entriesToFiltered, entriesToRedeliver, filteredEntryCount, filteredMessageCount,
+//                            filteredBytesCount, cursor, indexesAcks, totalEntries, totalMessages, totalBytes,
+//                            totalChunkedMessages, batchSizes, invalidIndexQueue
+//                    ));
+//            filterFutures.add(filterFuture);
         }
         while (invalidIndexQueue.peek() != null) {
             Integer invalidIndex = invalidIndexQueue.poll();
