@@ -30,7 +30,6 @@ public class EntryFilterSupport {
 
     protected final List<EntryFilter> entryFilters;
     protected final boolean hasFilter;
-    protected final FilterContext filterContext;
     protected final Subscription subscription;
 
     public EntryFilterSupport(Subscription subscription) {
@@ -51,10 +50,8 @@ public class EntryFilterSupport {
                     this.entryFilters = brokerService.getEntryFilterProvider().getBrokerEntryFilters();
                 }
             }
-            this.filterContext = new FilterContext();
         } else {
             this.entryFilters = Collections.emptyList();
-            this.filterContext = FilterContext.FILTER_CONTEXT_DISABLED;
         }
         hasFilter = CollectionUtils.isNotEmpty(entryFilters);
     }
@@ -62,19 +59,20 @@ public class EntryFilterSupport {
     public EntryFilter.FilterResult runFiltersForEntry(Entry entry, MessageMetadata msgMetadata,
                                                        Consumer consumer) {
         if (hasFilter) {
-            fillContext(filterContext, msgMetadata, subscription, consumer);
-            return getFilterResult(filterContext, entry, entryFilters);
+            FilterContext context = fillContext(msgMetadata, subscription, consumer);
+            return getFilterResult(context, entry, entryFilters);
         } else {
             return EntryFilter.FilterResult.ACCEPT;
         }
     }
 
-    private void fillContext(FilterContext context, MessageMetadata msgMetadata,
+    private FilterContext fillContext(MessageMetadata msgMetadata,
                              Subscription subscription, Consumer consumer) {
-        context.reset();
+        FilterContext context = new FilterContext();
         context.setMsgMetadata(msgMetadata);
         context.setSubscription(subscription);
         context.setConsumer(consumer);
+        return context;
     }
 
 
