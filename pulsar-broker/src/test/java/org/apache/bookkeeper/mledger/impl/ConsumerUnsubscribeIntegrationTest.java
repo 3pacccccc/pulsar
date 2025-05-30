@@ -52,6 +52,7 @@ public class ConsumerUnsubscribeIntegrationTest extends ProducerConsumerBase {
 
     @Test
     public void testUnSubscribeWhenCursorNotExists() throws Exception {
+        // 1
         final String topic = BrokerTestUtil.newUniqueName("persistent://public/default/tp");
         final String subscription = "s1";
         admin.topics().createNonPartitionedTopic(topic);
