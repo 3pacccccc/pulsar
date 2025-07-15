@@ -39,6 +39,7 @@ import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.ConsumerCryptoFailureAction;
 import org.apache.pulsar.client.api.ConsumerEventListener;
+import org.apache.pulsar.client.api.DecryptFailListener;
 import org.apache.pulsar.client.api.ConsumerInterceptor;
 import org.apache.pulsar.client.api.CryptoKeyReader;
 import org.apache.pulsar.client.api.DeadLetterPolicy;
@@ -171,6 +172,14 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
         if (conf.getKeySharedPolicy() != null && conf.getSubscriptionType() != SubscriptionType.Key_Shared) {
             return FutureUtil.failedFuture(
                     new InvalidConfigurationException("KeySharedPolicy must set with KeyShared subscription"));
+        }
+        if (conf.getDecryptFailListener() != null && conf.getMessageListener() == null) {
+            return FutureUtil.failedFuture(
+                    new InvalidConfigurationException("DecryptFail messageListener must be set with messageListener"));
+        }
+        if (conf.getDecryptFailListener() != null && conf.getCryptoFailureAction() != ConsumerCryptoFailureAction.CONSUME) {
+            return FutureUtil.failedFuture(
+                    new InvalidConfigurationException("decryptFailtListener can't be set when cryptoFailureAction is not  CONSUME"));
         }
         if (conf.getBatchReceivePolicy() != null) {
             conf.setReceiverQueueSize(
@@ -330,6 +339,12 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
     @Override
     public ConsumerBuilder<T> messageListener(@NonNull MessageListener<T> messageListener) {
         conf.setMessageListener(messageListener);
+        return this;
+    }
+
+    @Override
+    public ConsumerBuilder<T> decryptFailListener(@NonNull DecryptFailListener<T> messageListener) {
+        conf.setDecryptFailListener(messageListener);
         return this;
     }
 

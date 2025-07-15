@@ -706,6 +706,7 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
         internalConsumerConfig.setSubscriptionName(subscription);
         internalConsumerConfig.setConsumerName(consumerName);
         internalConsumerConfig.setMessageListener(null);
+        // todo wheater to set decryptListener
         return internalConsumerConfig;
     }
 
