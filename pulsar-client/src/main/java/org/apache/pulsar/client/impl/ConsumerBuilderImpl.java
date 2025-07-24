@@ -153,9 +153,12 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
             return FutureUtil.failedFuture(
                     new InvalidConfigurationException("DecryptFail messageListener must be set with messageListener"));
         }
-        if (conf.getDecryptFailListener() != null && conf.getCryptoFailureAction() != ConsumerCryptoFailureAction.CONSUME) {
+        if (conf.getDecryptFailListener() != null && conf.getCryptoFailureAction() != null) {
             return FutureUtil.failedFuture(
-                    new InvalidConfigurationException("decryptFailtListener can't be set when cryptoFailureAction is not  CONSUME"));
+                    new InvalidConfigurationException("decryptFailListener can't be set with cryptoFailureAction"));
+        }
+        if (conf.getDecryptFailListener() == null && conf.getMessageCrypto() == null) {
+            conf.setCryptoFailureAction(ConsumerCryptoFailureAction.FAIL);
         }
         if (conf.getBatchReceivePolicy() != null) {
             conf.setReceiverQueueSize(
