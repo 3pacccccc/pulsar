@@ -1195,7 +1195,7 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
             unAckedMessageTracker.add(id, msg.getRedeliveryCount());
             beforeConsume(msg);
             Optional<EncryptionContext> encryptionCtx = msg.getEncryptionCtx();
-            if (decryptFailListener != null && encryptionCtx.isPresent() && encryptionCtx.get().getKeys().isEmpty()) {
+            if (decryptFailListener != null && encryptionCtx.isPresent() && encryptionCtx.get().isEncrypted()) {
                 decryptFailListener.received(ConsumerBase.this, msg);
             } else {
                 listener.received(ConsumerBase.this, msg);
