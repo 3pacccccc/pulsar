@@ -2916,7 +2916,8 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     private boolean isMessageUndecryptable(MessageMetadata msgMetadata) {
         return (msgMetadata.getEncryptionKeysCount() > 0 && conf.getCryptoKeyReader() == null
-                && (conf.getCryptoFailureAction() == ConsumerCryptoFailureAction.CONSUME || conf.getDecryptFailListener() != null));
+                && (conf.getCryptoFailureAction() == ConsumerCryptoFailureAction.CONSUME
+                || conf.getDecryptFailListener() != null));
     }
 
     /**
