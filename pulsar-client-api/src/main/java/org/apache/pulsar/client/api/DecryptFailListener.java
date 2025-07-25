@@ -18,10 +18,10 @@
  */
 package org.apache.pulsar.client.api;
 
+import java.io.Serializable;
 import org.apache.pulsar.common.classification.InterfaceAudience;
 import org.apache.pulsar.common.classification.InterfaceStability;
 
-import java.io.Serializable;
 
 /**
  * A listener that will be called in order for every message received.
