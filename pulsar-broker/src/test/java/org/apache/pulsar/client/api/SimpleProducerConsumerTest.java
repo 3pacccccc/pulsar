@@ -258,6 +258,10 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
         @Cleanup
         Consumer<byte[]> consumer = newPulsarClient.newConsumer()
             .topic(topic)
+                .decryptFailListener((consumer1, msg) -> {
+
+                })
+            .cryptoFailureAction(ConsumerCryptoFailureAction.FAIL)
             .subscriptionName("my-sub")
             .subscribe();
 
