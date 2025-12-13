@@ -57,6 +57,8 @@ public class AuthenticationOAuth2Test {
         this.auth = new AuthenticationOAuth2(flow, this.clock);
     }
 
+
+
     @Test
     public void testGetAuthMethodName() {
         assertEquals(this.auth.getAuthMethodName(), "token");
