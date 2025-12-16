@@ -38,5 +38,5 @@ public class AnalyzeSubscriptionBacklogResult {
     private boolean aborted;
     private String firstMessageId;
     private String lastMessageId;
-
+    private long markerMessageCount;
 }

@@ -1702,6 +1702,7 @@ public class PersistentTopicsBase extends AdminResource {
                         result.setFilterRejectedMessages(rawResult.getFilterRejectedMessages());
                         result.setFilterRescheduledMessages(rawResult.getFilterRescheduledMessages());
                         result.setAborted(rawResult.getScanOutcome() != ScanOutcome.COMPLETED);
+                        result.setMarkerMessageCount(rawResult.getMarkerMessageCount());
                         log.info("[{}] analyzeBacklog topic {} subscription {} result {}", clientAppId(), subName,
                             topicName, result);
                         asyncResponse.resume(result);

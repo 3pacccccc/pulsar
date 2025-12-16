@@ -638,6 +638,7 @@ public class PersistentSubscription extends AbstractSubscription {
         AtomicLong acceptedMessages = new AtomicLong();
         AtomicLong rejectedMessages = new AtomicLong();
         AtomicLong rescheduledMessages = new AtomicLong();
+        AtomicLong markerMessages = new AtomicLong();
 
         Position currentPosition = newNonDurableCursor.getMarkDeletedPosition();
 
@@ -666,6 +667,9 @@ public class PersistentSubscription extends AbstractSubscription {
                 messageMetadata = entry.getMessageMetadata();
             } else {
                 messageMetadata = Commands.peekMessageMetadata(metadataAndPayload, "", -1);
+            }
+            if (messageMetadata != null && messageMetadata.hasMarkerType()) {
+                markerMessages.incrementAndGet();
             }
             int numMessages = 1;
             if (messageMetadata.hasNumMessagesInBatch()) {
