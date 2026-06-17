@@ -21,17 +21,14 @@ package org.apache.pulsar.client.impl.auth.oauth2.protocol;
 import com.fasterxml.jackson.databind.ObjectReader;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.resolver.NameResolver;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.util.concurrent.ExecutionException;
 import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.asynchttpclient.AsyncHttpClient;
-import org.asynchttpclient.BoundRequestBuilder;
 import org.asynchttpclient.Response;
 
 /**
@@ -39,42 +36,62 @@ import org.asynchttpclient.Response;
  */
 public class DefaultMetadataResolver implements MetadataResolver {
 
+    private static final String WELL_KNOWN_PREFIX = "/.well-known/";
+    private static final String DEFAULT_WELL_KNOWN_METADATA_PATH = WELL_KNOWN_PREFIX + "openid-configuration";
+    /**
+     * The OAuth 2.0 Authorization Server Metadata path as defined in RFC 8414.
+     */
+    public static final String OAUTH_WELL_KNOWN_METADATA_PATH = WELL_KNOWN_PREFIX + "oauth-authorization-server";
+
     private final URL metadataUrl;
     private final ObjectReader objectReader;
     private final AsyncHttpClient httpClient;
-    private final NameResolver<InetAddress> nameResolver;
 
-    public DefaultMetadataResolver(URL metadataUrl, AsyncHttpClient httpClient,
-                                   NameResolver<InetAddress> nameResolver) {
+    public DefaultMetadataResolver(URL metadataUrl, AsyncHttpClient httpClient) {
         this.metadataUrl = metadataUrl;
         this.objectReader = ObjectMapperFactory.getMapper().reader().forType(Metadata.class);
         this.httpClient = httpClient;
-        this.nameResolver = nameResolver;
     }
 
     /**
      * Gets a well-known metadata URL for the given OAuth issuer URL.
      *
      * @param issuerUrl The authorization server's issuer identifier
+     * @param httpClient The HTTP client
+     * @param wellKnownMetadataPath The well-known metadata path (must start with "/.well-known/")
      * @return a resolver
      */
-    public static DefaultMetadataResolver fromIssuerUrl(URL issuerUrl,
-                                                        AsyncHttpClient httpClient,
-                                                        NameResolver<InetAddress> nameResolver) {
-        return new DefaultMetadataResolver(getWellKnownMetadataUrl(issuerUrl), httpClient, nameResolver);
+    public static DefaultMetadataResolver fromIssuerUrl(URL issuerUrl, AsyncHttpClient httpClient,
+                                                        String wellKnownMetadataPath) {
+        return new DefaultMetadataResolver(getWellKnownMetadataUrl(issuerUrl, wellKnownMetadataPath), httpClient);
     }
 
     /**
      * Gets a well-known metadata URL for the given OAuth issuer URL.
      *
      * @param issuerUrl The authorization server's issuer identifier
+     * @param wellKnownMetadataPath The well-known metadata path (must start with "/.well-known/")
      * @return a URL
      * @see <a href="https://tools.ietf.org/id/draft-ietf-oauth-discovery-08.html#ASConfig">
      * OAuth Discovery: Obtaining Authorization Server Metadata</a>
      */
-    public static URL getWellKnownMetadataUrl(URL issuerUrl) {
+    public static URL getWellKnownMetadataUrl(URL issuerUrl, String wellKnownMetadataPath) {
         try {
-            return URI.create(issuerUrl.toExternalForm() + "/.well-known/openid-configuration").normalize().toURL();
+            if (wellKnownMetadataPath == null || wellKnownMetadataPath.isEmpty()) {
+                return URI.create(issuerUrl.toExternalForm() + DEFAULT_WELL_KNOWN_METADATA_PATH).normalize().toURL();
+            }
+            if (wellKnownMetadataPath.startsWith(WELL_KNOWN_PREFIX)) {
+                String issuerUrlString = issuerUrl.toExternalForm();
+                // For OAuth2, insert well-known path before the issuer URL path
+                URL url = new URL(issuerUrlString);
+                String path = url.getPath();
+                String basePath = issuerUrlString.substring(0,
+                        issuerUrlString.length() - (path.isEmpty() ? 0 : path.length()));
+                return URI.create(basePath + wellKnownMetadataPath + path).normalize().toURL();
+            } else {
+                throw new IllegalArgumentException("Metadata path must start with '" + WELL_KNOWN_PREFIX
+                        + "', but was: " + wellKnownMetadataPath);
+            }
         } catch (MalformedURLException e) {
             throw new IllegalArgumentException(e);
         }
@@ -89,12 +106,11 @@ public class DefaultMetadataResolver implements MetadataResolver {
     public Metadata resolve() throws IOException {
 
         try {
-            BoundRequestBuilder requestBuilder = httpClient.prepareGet(metadataUrl.toString())
-                    .addHeader(HttpHeaderNames.ACCEPT, HttpHeaderValues.APPLICATION_JSON);
-            if (nameResolver != null) {
-                requestBuilder.setNameResolver(nameResolver);
-            }
-            Response response = requestBuilder.execute().toCompletableFuture().get();
+            Response response = httpClient.prepareGet(metadataUrl.toString())
+                    .addHeader(HttpHeaderNames.ACCEPT, HttpHeaderValues.APPLICATION_JSON)
+                    .execute()
+                    .toCompletableFuture()
+                    .get();
 
             Metadata metadata;
             try (InputStream inputStream = response.getResponseBodyAsStream()) {
