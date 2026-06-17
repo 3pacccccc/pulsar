@@ -18,33 +18,22 @@
  */
 package org.apache.pulsar.client.api;
 
-import java.util.Optional;
 import org.apache.pulsar.common.classification.InterfaceAudience;
 import org.apache.pulsar.common.classification.InterfaceStability;
 
 /**
- * Context passed to authentication providers during initialization.
+ * Creates HTTP clients for authentication providers.
  */
 @InterfaceAudience.LimitedPrivate
 @InterfaceStability.Evolving
-public interface AuthenticationInitContext {
+public interface AuthenticationHttpClientFactory {
 
     /**
-     * Looks up a service by type.
+     * Creates a HTTP client for authentication requests.
      *
-     * @param serviceClass the service type
-     * @param <T> the service type
-     * @return the service instance, if available
+     * @param config the HTTP client configuration
+     * @return a HTTP client
+     * @throws PulsarClientException if the HTTP client cannot be created
      */
-    <T> Optional<T> getService(Class<T> serviceClass);
-
-    /**
-     * Looks up a named service by type.
-     *
-     * @param serviceClass the service type
-     * @param name the service name
-     * @param <T> the service type
-     * @return the named service instance, if available
-     */
-    <T> Optional<T> getServiceByName(Class<T> serviceClass, String name);
+    AuthenticationHttpClient create(AuthenticationHttpClientConfig config) throws PulsarClientException;
 }

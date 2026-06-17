@@ -57,6 +57,7 @@ import lombok.Getter;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.api.Authentication;
+import org.apache.pulsar.client.api.AuthenticationHttpClientFactory;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.Producer;
@@ -72,6 +73,7 @@ import org.apache.pulsar.client.api.TableViewBuilder;
 import org.apache.pulsar.client.api.schema.KeyValueSchema;
 import org.apache.pulsar.client.api.schema.SchemaInfoProvider;
 import org.apache.pulsar.client.api.transaction.TransactionBuilder;
+import org.apache.pulsar.client.impl.auth.DefaultAuthenticationHttpClientFactory;
 import org.apache.pulsar.client.impl.conf.ClientConfigurationData;
 import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
 import org.apache.pulsar.client.impl.conf.ProducerConfigurationData;
@@ -313,12 +315,13 @@ public class PulsarClientImpl implements PulsarClient {
             throw t;
         }
     }
+
     private AuthenticationInitContextImpl buildAuthenticationInitContext() {
-        return new AuthenticationInitContextImpl(
-                createdEventLoopGroup ? null : eventLoopGroup,
-                needStopTimer ? null : timer,
-                addressResolver == null ? null : DnsResolverUtil.adaptToNameResolver(addressResolver)
-        );
+        AuthenticationHttpClientFactory httpClientFactory = new DefaultAuthenticationHttpClientFactory(
+                eventLoopGroup, timer, getNameResolver());
+        return new AuthenticationInitContextImpl()
+                .addService(AuthenticationHttpClientFactory.class, httpClientFactory)
+                .addService("default", AuthenticationHttpClientFactory.class, httpClientFactory);
     }
 
     private void reduceConsumerReceiverQueueSize() {

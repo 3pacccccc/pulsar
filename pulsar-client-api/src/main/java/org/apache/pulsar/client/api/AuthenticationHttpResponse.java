@@ -18,33 +18,45 @@
  */
 package org.apache.pulsar.client.api;
 
-import java.util.Optional;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.Charset;
 import org.apache.pulsar.common.classification.InterfaceAudience;
 import org.apache.pulsar.common.classification.InterfaceStability;
 
 /**
- * Context passed to authentication providers during initialization.
+ * HTTP response returned to authentication providers.
  */
 @InterfaceAudience.LimitedPrivate
 @InterfaceStability.Evolving
-public interface AuthenticationInitContext {
+public final class AuthenticationHttpResponse {
+    private final int statusCode;
+    private final String statusText;
+    private final byte[] body;
 
-    /**
-     * Looks up a service by type.
-     *
-     * @param serviceClass the service type
-     * @param <T> the service type
-     * @return the service instance, if available
-     */
-    <T> Optional<T> getService(Class<T> serviceClass);
+    public AuthenticationHttpResponse(int statusCode, String statusText, byte[] body) {
+        this.statusCode = statusCode;
+        this.statusText = statusText;
+        this.body = body == null ? new byte[0] : body.clone();
+    }
 
-    /**
-     * Looks up a named service by type.
-     *
-     * @param serviceClass the service type
-     * @param name the service name
-     * @param <T> the service type
-     * @return the named service instance, if available
-     */
-    <T> Optional<T> getServiceByName(Class<T> serviceClass, String name);
+    public int getStatusCode() {
+        return statusCode;
+    }
+
+    public String getStatusText() {
+        return statusText;
+    }
+
+    public byte[] getBody() {
+        return body.clone();
+    }
+
+    public String getBodyAsString(Charset charset) {
+        return new String(body, charset);
+    }
+
+    public InputStream getBodyAsStream() {
+        return new ByteArrayInputStream(body);
+    }
 }

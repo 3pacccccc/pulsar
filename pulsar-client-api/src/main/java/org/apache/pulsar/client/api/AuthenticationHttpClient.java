@@ -16,8 +16,25 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+package org.apache.pulsar.client.api;
+
+import java.io.Closeable;
+import java.util.concurrent.CompletableFuture;
+import org.apache.pulsar.common.classification.InterfaceAudience;
+import org.apache.pulsar.common.classification.InterfaceStability;
 
 /**
- * Pulsar Authentication http client.
+ * HTTP client abstraction for authentication providers.
  */
-package org.apache.pulsar.client.impl.auth.httpclient;
+@InterfaceAudience.LimitedPrivate
+@InterfaceStability.Evolving
+public interface AuthenticationHttpClient extends Closeable {
+
+    /**
+     * Executes a HTTP request.
+     *
+     * @param request the request to execute
+     * @return the response future
+     */
+    CompletableFuture<AuthenticationHttpResponse> execute(AuthenticationHttpRequest request);
+}

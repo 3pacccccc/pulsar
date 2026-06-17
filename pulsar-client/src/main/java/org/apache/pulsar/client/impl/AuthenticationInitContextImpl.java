@@ -18,55 +18,46 @@
  */
 package org.apache.pulsar.client.impl;
 
-import io.netty.channel.EventLoopGroup;
-import io.netty.resolver.NameResolver;
-import io.netty.util.Timer;
-import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.apache.pulsar.client.api.AuthenticationInitContext;
 
-public class AuthenticationInitContextImpl implements AuthenticationInitContext {
-    private final Map<Class<?>, Object> sharedServices = new HashMap<>();
+final class AuthenticationInitContextImpl implements AuthenticationInitContext {
+    private final Map<Class<?>, Object> services = new HashMap<>();
     private final Map<String, Map<Class<?>, Object>> namedServices = new HashMap<>();
 
-    public AuthenticationInitContextImpl(EventLoopGroup eventLoopGroup,
-                                         Timer timer,
-                                         NameResolver<InetAddress> nameResolver) {
-        this.sharedServices.put(EventLoopGroup.class, eventLoopGroup);
-        this.sharedServices.put(Timer.class, timer);
-        this.sharedServices.put(NameResolver.class, nameResolver);
+    <T> AuthenticationInitContextImpl addService(Class<T> serviceClass, T service) {
+        if (service != null) {
+            services.put(serviceClass, service);
+        }
+        return this;
+    }
+
+    <T> AuthenticationInitContextImpl addService(String name, Class<T> serviceClass, T service) {
+        if (service != null) {
+            namedServices.computeIfAbsent(name, ignored -> new HashMap<>()).put(serviceClass, service);
+        }
+        return this;
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <T> Optional<T> getService(Class<T> serviceClass) {
         if (serviceClass == null) {
-            throw new IllegalArgumentException("Service class cannot be null");
+            throw new IllegalArgumentException("serviceClass cannot be null");
         }
-        return Optional.ofNullable((T) sharedServices.get(serviceClass));
+        return Optional.ofNullable(serviceClass.cast(services.get(serviceClass)));
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <T> Optional<T> getServiceByName(Class<T> serviceClass, String name) {
+        if (serviceClass == null) {
+            throw new IllegalArgumentException("serviceClass cannot be null");
+        }
         if (name == null || name.isEmpty()) {
-            throw new IllegalArgumentException("Service name cannot be null or empty");
+            throw new IllegalArgumentException("name cannot be null or empty");
         }
-        Map<Class<?>, Object> services = namedServices.get(name);
-        if (services != null) {
-            return Optional.ofNullable((T) services.get(serviceClass));
-        }
-        return Optional.empty();
-    }
-
-    public <T> void addService(Class<T> serviceClass, T instance) {
-        sharedServices.put(serviceClass, instance);
-    }
-
-    public <T> void addService(Class<T> serviceClass, String name, T instance) {
-        namedServices.computeIfAbsent(name, k -> new HashMap<>())
-                .put(serviceClass, instance);
+        return Optional.ofNullable(namedServices.get(name))
+                .map(servicesByName -> serviceClass.cast(servicesByName.get(serviceClass)));
     }
 }
