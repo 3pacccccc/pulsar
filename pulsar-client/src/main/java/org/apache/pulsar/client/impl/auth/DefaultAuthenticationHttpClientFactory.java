@@ -99,10 +99,18 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
             confBuilder.setNettyTimer(timer);
         }
 
-        PulsarSslFactory sslFactory = configureSsl(config, confBuilder);
-        ScheduledExecutorService sslRefreshScheduler = scheduleSslContextRefreshIfEnabled(sslFactory,
-                resolveDuration(config.getAutoCertRefreshDuration(), DEFAULT_AUTO_CERT_REFRESH_DURATION));
-        return new ClientResources(new DefaultAsyncHttpClient(confBuilder.build()), sslFactory, sslRefreshScheduler);
+        PulsarSslFactory sslFactory = null;
+        ScheduledExecutorService sslRefreshScheduler = null;
+        try {
+            sslFactory = configureSsl(config, confBuilder);
+            sslRefreshScheduler = scheduleSslContextRefreshIfEnabled(sslFactory,
+                    resolveDuration(config.getAutoCertRefreshDuration(), DEFAULT_AUTO_CERT_REFRESH_DURATION));
+            AsyncHttpClient httpClient = new DefaultAsyncHttpClient(confBuilder.build());
+            return new ClientResources(httpClient, sslFactory, sslRefreshScheduler);
+        } catch (Exception e) {
+            closeSslResources(sslRefreshScheduler, sslFactory, e);
+            throw e;
+        }
     }
 
     private Duration resolveDuration(Duration configuredValue, Duration defaultValue) {
@@ -139,9 +147,8 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
                 confBuilder.setSslContext(SslContextBuilder.forClient()
                         .trustManager(new File(config.getTrustCertsFilePath()))
                         .build());
-            } catch (SSLException e) {
+            } catch (SSLException | RuntimeException e) {
                 log.error().exception(e).log("Could not set trustCertsFilePath");
-                throw e;
             }
         }
         return null;
@@ -159,6 +166,24 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
                 refreshSeconds, refreshSeconds, TimeUnit.SECONDS);
         log.debug().attr("refreshSeconds", refreshSeconds).log("Scheduled TLS certificate refresh");
         return sslRefreshScheduler;
+    }
+
+    private void closeSslResources(ScheduledExecutorService sslRefreshScheduler, PulsarSslFactory sslFactory,
+                                   Exception originalException) {
+        if (sslRefreshScheduler != null) {
+            try {
+                sslRefreshScheduler.shutdownNow();
+            } catch (Exception e) {
+                originalException.addSuppressed(e);
+            }
+        }
+        if (sslFactory != null) {
+            try {
+                sslFactory.close();
+            } catch (Exception e) {
+                originalException.addSuppressed(e);
+            }
+        }
     }
 
     private void refreshSslContext(PulsarSslFactory sslFactory) {
