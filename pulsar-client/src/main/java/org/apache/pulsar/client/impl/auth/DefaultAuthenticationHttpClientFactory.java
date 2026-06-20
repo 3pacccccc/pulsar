@@ -30,6 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import javax.net.ssl.SSLException;
 import lombok.CustomLog;
 import org.apache.commons.lang3.StringUtils;
@@ -58,16 +59,29 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
     private static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DEFAULT_AUTO_CERT_REFRESH_DURATION = Duration.ofSeconds(300);
 
-    private final EventLoopGroup eventLoopGroup;
+    private final Supplier<EventLoopGroup> eventLoopGroupSupplier;
     private final Timer timer;
-    private final NameResolver<InetAddress> nameResolver;
+    private final Supplier<NameResolver<InetAddress>> nameResolverSupplier;
 
     public DefaultAuthenticationHttpClientFactory(EventLoopGroup eventLoopGroup,
                                                   Timer timer,
                                                   NameResolver<InetAddress> nameResolver) {
-        this.eventLoopGroup = eventLoopGroup;
+        this(() -> eventLoopGroup, timer, () -> nameResolver);
+    }
+
+    public static DefaultAuthenticationHttpClientFactory withLazyResources(
+            Supplier<EventLoopGroup> eventLoopGroupSupplier,
+            Timer timer,
+            Supplier<NameResolver<InetAddress>> nameResolverSupplier) {
+        return new DefaultAuthenticationHttpClientFactory(eventLoopGroupSupplier, timer, nameResolverSupplier);
+    }
+
+    private DefaultAuthenticationHttpClientFactory(Supplier<EventLoopGroup> eventLoopGroupSupplier,
+                                                   Timer timer,
+                                                   Supplier<NameResolver<InetAddress>> nameResolverSupplier) {
+        this.eventLoopGroupSupplier = eventLoopGroupSupplier;
         this.timer = timer;
-        this.nameResolver = nameResolver;
+        this.nameResolverSupplier = nameResolverSupplier;
     }
 
     @Override
@@ -77,8 +91,8 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
                 : config;
         try {
             ClientResources resources = createAsyncHttpClient(resolvedConfig);
-            return new DefaultAuthenticationHttpClient(resources.httpClient, nameResolver, resources.sslFactory,
-                    resources.sslRefreshScheduler);
+            return new DefaultAuthenticationHttpClient(resources.httpClient, resources.nameResolver,
+                    resources.sslFactory, resources.sslRefreshScheduler);
         } catch (Exception e) {
             throw new PulsarClientException.InvalidConfigurationException(e);
         }
@@ -92,9 +106,6 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
         confBuilder.setConnectTimeout(resolveDuration(config.getConnectTimeout(), DEFAULT_CONNECT_TIMEOUT));
         confBuilder.setReadTimeout(resolveDuration(config.getReadTimeout(), DEFAULT_READ_TIMEOUT));
         confBuilder.setUserAgent(String.format("Pulsar-Java-v%s", PulsarVersion.getVersion()));
-        if (eventLoopGroup != null) {
-            confBuilder.setEventLoopGroup(eventLoopGroup);
-        }
         if (timer != null) {
             confBuilder.setNettyTimer(timer);
         }
@@ -105,8 +116,13 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
             sslFactory = configureSsl(config, confBuilder);
             sslRefreshScheduler = scheduleSslContextRefreshIfEnabled(sslFactory,
                     resolveDuration(config.getAutoCertRefreshDuration(), DEFAULT_AUTO_CERT_REFRESH_DURATION));
+            EventLoopGroup eventLoopGroup = eventLoopGroupSupplier == null ? null : eventLoopGroupSupplier.get();
+            if (eventLoopGroup != null) {
+                confBuilder.setEventLoopGroup(eventLoopGroup);
+            }
+            NameResolver<InetAddress> nameResolver = nameResolverSupplier == null ? null : nameResolverSupplier.get();
             AsyncHttpClient httpClient = new DefaultAsyncHttpClient(confBuilder.build());
-            return new ClientResources(httpClient, sslFactory, sslRefreshScheduler);
+            return new ClientResources(httpClient, nameResolver, sslFactory, sslRefreshScheduler);
         } catch (Exception e) {
             closeSslResources(sslRefreshScheduler, sslFactory, e);
             throw e;
@@ -264,7 +280,8 @@ public class DefaultAuthenticationHttpClientFactory implements AuthenticationHtt
         }
     }
 
-    private record ClientResources(AsyncHttpClient httpClient, PulsarSslFactory sslFactory,
+    private record ClientResources(AsyncHttpClient httpClient, NameResolver<InetAddress> nameResolver,
+                                   PulsarSslFactory sslFactory,
                                    ScheduledExecutorService sslRefreshScheduler) {
     }
 }
